@@ -1,0 +1,5 @@
+# Never upload secrets with `vercel deploy`; set them as Vercel environment variables instead
+.env
+.env.*
+!.env.example
+client_secret_*.json
