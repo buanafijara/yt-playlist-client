@@ -4,6 +4,7 @@ A stateless YouTube web client. Users sign in with Google and see:
 
 - **Playlists** (`/playlists`, the default page after sign-in): videos from every playlist they own, loaded in batches as they scroll. Each video is de-duplicated and tagged with the playlists it belongs to. Filter by one or more playlists from the "All playlists" pop-up, or by clicking a tag. The button next to each title opens "Save to playlist", where ticking a playlist adds the video to it and unticking removes it.
 - **Subscriptions** (`/feed`): the latest uploads from every channel they subscribe to, newest first, with infinite scroll.
+- **Length filter** (both pages): YouTube's own buckets: under 4 min, 4–20 min, over 20 min. Durations come with every video, so filtering happens in the browser and costs no quota. On Playlists it filters what has loaded so far, and keeps loading batches until the screen fills with matches.
 
 There is no database. OAuth tokens are kept in an AES-256-GCM encrypted, `httpOnly` cookie and refreshed automatically.
 

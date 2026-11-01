@@ -7,7 +7,9 @@
 	import VideoGridSkeleton from './VideoGridSkeleton.svelte';
 	import PlaylistPicker from './PlaylistPicker.svelte';
 	import SaveToPlaylist from './SaveToPlaylist.svelte';
+	import DurationSelect from './DurationSelect.svelte';
 	import { onDestroy } from 'svelte';
+	import { durationLabel, matchesDuration, type DurationFilter } from '#lib/duration-filter.ts';
 	import { PlaylistLoader, type Shuffle } from '#lib/playlist-loader.svelte.ts';
 	import type { PlaylistSummary, PlaylistVideo } from '#lib/types.ts';
 
@@ -32,10 +34,16 @@
 	/** when set, the list shows this random order instead of the feed */
 	let shuffle = $state.raw<Shuffle | null>(null);
 	let shown = $state(SHUFFLE_BATCH);
+	let duration = $state<DurationFilter>('any');
 
-	const videos = $derived(
-		(shuffle ? shuffle.ids.slice(0, shown) : feed.ids).map((id) => loader.videos.get(id)!)
+	// The length filter applies to what's loaded. While it hides most of a batch the
+	// infinite scroll stays in view, so more batches load until the screen fills.
+	const matching = $derived(
+		(shuffle ? shuffle.ids : feed.ids)
+			.map((id) => loader.videos.get(id)!)
+			.filter((video) => matchesDuration(video, duration))
 	);
+	const videos = $derived(shuffle ? matching.slice(0, shown) : matching);
 	const error = $derived(shuffle ? shuffle.error : feed.error);
 	const chosen = $derived(playlists.filter((p) => selected.includes(p.id)));
 	const total = $derived((chosen.length ? chosen : playlists).reduce((sum, p) => sum + p.count, 0));
@@ -68,6 +76,12 @@
 	function toggle(id: string) {
 		select(selected.includes(id) ? selected.filter((s) => s !== id) : [...selected, id]);
 	}
+
+	function filterDuration(value: DurationFilter) {
+		duration = value;
+		shown = SHUFFLE_BATCH;
+		scrollTo({ top: 0 });
+	}
 </script>
 
 {#if !playlists.length}
@@ -90,6 +104,9 @@
 			{playlists.length} playlists · {total} videos
 		{/if}
 		{#if shuffle}· shuffled{/if}
+		{#if duration !== 'any'}
+			· {matching.length} {durationLabel(duration).toLowerCase()}{shuffle || feed.done ? '' : ' so far'}
+		{/if}
 	</p>
 
 	<!-- only the selection is shown as chips; the full list lives in the picker -->
@@ -110,6 +127,7 @@
 		<PlaylistPicker {playlists} {selected} onapply={select} />
 
 		<span class="order">
+			<DurationSelect value={duration} onchange={filterDuration} />
 			<button
 				class="chip"
 				aria-pressed={!!shuffle}
@@ -192,7 +210,7 @@
 		<!-- the shuffled order is already fully loaded; scrolling just reveals more of it -->
 		<InfiniteScroll
 			onload={() => (shown += SHUFFLE_BATCH)}
-			paused={shuffle.loading || !!shuffle.error || shown >= shuffle.ids.length}
+			paused={shuffle.loading || !!shuffle.error || shown >= matching.length}
 		/>
 	{:else}
 		<InfiniteScroll onload={() => loader.loadMore(feed)} paused={feed.loading || feed.done || !!feed.error} />
@@ -210,8 +228,20 @@
 		<div class:more={videos.length}>
 			<VideoGridSkeleton count={videos.length ? 4 : 12} tags />
 		</div>
-	{:else if shuffle && shown < shuffle.ids.length}
+	{:else if shuffle && shown < matching.length}
 		<!-- more shuffled cards are revealed as the user scrolls -->
+	{:else if !videos.length && duration !== 'any'}
+		<EmptyState
+			icon="◷"
+			title="No videos {durationLabel(duration).toLowerCase()}"
+			message={only
+				? `Nothing in “${only.title}” is ${durationLabel(duration).toLowerCase()}.`
+				: `Nothing in ${chosen.length ? 'these playlists' : 'your playlists'} is ${durationLabel(duration).toLowerCase()}.`}
+		>
+			{#snippet actions()}
+				<button onclick={() => filterDuration('any')}>Show any length</button>
+			{/snippet}
+		</EmptyState>
 	{:else if !videos.length}
 		<EmptyState
 			icon="∅"
