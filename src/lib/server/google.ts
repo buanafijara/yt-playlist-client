@@ -8,7 +8,8 @@ export const SCOPES = [
 	'openid',
 	'email',
 	'profile',
-	'https://www.googleapis.com/auth/youtube.readonly'
+	// full access rather than youtube.readonly: needed to add videos to and remove them from playlists
+	'https://www.googleapis.com/auth/youtube'
 ];
 
 interface TokenResponse {

@@ -33,6 +33,8 @@ interface PlaylistResource {
 }
 
 interface PlaylistItemResource {
+	/** ID of this entry in the playlist (not the video ID); needed to remove it */
+	id: string;
 	snippet: {
 		title: string;
 		publishedAt: string;
@@ -49,16 +51,31 @@ interface VideoResource {
 	contentDetails: { duration: string };
 }
 
-async function get<T>(token: string, path: string, params: Record<string, string>): Promise<T> {
+async function request<T>(
+	token: string,
+	path: string,
+	params: Record<string, string>,
+	{ method = 'GET', body }: { method?: string; body?: unknown } = {}
+): Promise<T> {
 	const res = await fetch(`${API}/${path}?${new URLSearchParams(params)}`, {
-		headers: { authorization: `Bearer ${token}` }
+		method,
+		headers: {
+			authorization: `Bearer ${token}`,
+			...(body !== undefined && { 'content-type': 'application/json' })
+		},
+		body: body === undefined ? undefined : JSON.stringify(body)
 	});
 	if (!res.ok) {
-		const body = await res.json().catch(() => null);
-		const err = body?.error;
+		const json = await res.json().catch(() => null);
+		const err = json?.error;
 		throw new YouTubeError(res.status, err?.errors?.[0]?.reason ?? 'unknown', err?.message ?? res.statusText);
 	}
-	return res.json();
+	// deletes answer 204 No Content
+	return res.status === 204 ? (undefined as T) : res.json();
+}
+
+function get<T>(token: string, path: string, params: Record<string, string>) {
+	return request<T>(token, path, params);
 }
 
 /** Follows nextPageToken until exhausted or `max` items have been collected. */
@@ -202,12 +219,51 @@ export async function getPlaylistPage(token: string, playlistId: string, pageTok
 	});
 	const items = page.items
 		.filter(isPlayable)
-		.map((item) => ({ ...toVideo(item), addedAt: item.snippet.publishedAt }));
+		.map((item) => ({ ...toVideo(item), addedAt: item.snippet.publishedAt, itemId: item.id }));
 
 	return {
 		items: await attachDurations(token, items),
 		nextPageToken: page.nextPageToken
 	};
+}
+
+/**
+ * Adds a video to one of the user's playlists, unless it's already there, so
+ * that saving twice never creates a duplicate entry.
+ *
+ * Quota cost: 1 to check, plus 50 if it has to be added.
+ */
+export async function addToPlaylist(
+	token: string,
+	playlistId: string,
+	videoId: string
+): Promise<{ itemId: string; added: boolean }> {
+	const existing = await get<Page<PlaylistItemResource>>(token, 'playlistItems', {
+		part: 'id',
+		playlistId,
+		videoId,
+		maxResults: '1'
+	});
+	if (existing.items[0]) return { itemId: existing.items[0].id, added: false };
+
+	const item = await request<PlaylistItemResource>(
+		token,
+		'playlistItems',
+		{ part: 'snippet' },
+		{ method: 'POST', body: { snippet: { playlistId, resourceId: { kind: 'youtube#video', videoId } } } }
+	);
+	return { itemId: item.id, added: true };
+}
+
+/** Removes one entry from a playlist. Quota cost: 50. */
+export async function removeFromPlaylist(token: string, itemId: string) {
+	try {
+		await request<void>(token, 'playlistItems', { id: itemId }, { method: 'DELETE' });
+	} catch (e) {
+		// already gone (e.g. removed on youtube.com meanwhile), which is what we wanted
+		if (e instanceof YouTubeError && e.status === 404) return;
+		throw e;
+	}
 }
 
 /** Returns the signed-in user's access token, or sends them to sign in. */
@@ -230,6 +286,10 @@ export async function friendlyErrors<T>(request: Promise<T>): Promise<T> {
 		if (!(e instanceof YouTubeError)) throw e;
 		if (e.status === 401) {
 			error(401, 'Your Google session has expired. Please sign in again.');
+		}
+		// sessions from before the app asked for write access only hold the read-only scope
+		if (e.reason === 'insufficientPermissions' || /insufficient authentication scopes/i.test(e.message)) {
+			error(401, 'YT Client needs permission to manage your playlists. Sign in again and allow it.');
 		}
 		if (e.reason === 'quotaExceeded' || e.reason === 'rateLimitExceeded') {
 			error(503, 'The YouTube API quota for this app is used up. Try again later.');

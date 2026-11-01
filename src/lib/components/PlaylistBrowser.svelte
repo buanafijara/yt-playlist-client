@@ -6,17 +6,23 @@
 	import VideoGrid from './VideoGrid.svelte';
 	import VideoGridSkeleton from './VideoGridSkeleton.svelte';
 	import PlaylistPicker from './PlaylistPicker.svelte';
+	import SaveToPlaylist from './SaveToPlaylist.svelte';
 	import { onDestroy } from 'svelte';
 	import { PlaylistLoader, type Shuffle } from '#lib/playlist-loader.svelte.ts';
-	import type { PlaylistSummary } from '#lib/types.ts';
+	import type { PlaylistSummary, PlaylistVideo } from '#lib/types.ts';
 
 	/** shuffled cards revealed per scroll batch */
 	const SHUFFLE_BATCH = 24;
 
-	let { playlists }: { playlists: PlaylistSummary[] } = $props();
+	let { playlists: initial }: { playlists: PlaylistSummary[] } = $props();
 
 	// svelte-ignore state_referenced_locally (the playlist list is fixed for the life of the page)
-	const loader = new PlaylistLoader(playlists);
+	const loader = new PlaylistLoader(initial);
+	// the loader's copy, whose counts change as videos are added and removed
+	const playlists = loader.playlists;
+
+	/** video whose "Save to playlist" dialog is open */
+	let managing = $state<PlaylistVideo | null>(null);
 
 	/** selected playlist IDs, in the user's playlist order; empty means all */
 	let selected = $state<string[]>([]);
@@ -144,6 +150,24 @@
 		<VideoGrid>
 			{#each videos as video (video.id)}
 				<VideoCard {video} date={{ label: 'Added', value: video.addedAt }}>
+					{#snippet actions()}
+						<button
+							class="save"
+							title="Save to playlist"
+							aria-label="Save “{video.title}” to playlist"
+							onclick={() => (managing = video)}
+						>
+							<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+								<path
+									d="M3 6h12M3 12h12M3 18h7M17 15v6M14 18h6"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									fill="none"
+								/>
+							</svg>
+						</button>
+					{/snippet}
 					{#snippet tags()}
 						{#each video.playlists as playlist (playlist.id)}
 							<button
@@ -209,9 +233,30 @@
 			That's everything{only ? ` in “${only.title}”` : chosen.length ? ' in these playlists' : ''}.
 		</p>
 	{/if}
+
+	<SaveToPlaylist {loader} video={managing} onclose={() => (managing = null)} />
 {/if}
 
 <style>
+	.save {
+		flex: none;
+		display: grid;
+		place-items: center;
+		width: 2rem;
+		height: 2rem;
+		margin: -0.3rem -0.4rem 0 0;
+		border: none;
+		border-radius: 50%;
+		background: none;
+		color: var(--muted);
+	}
+
+	.save:hover,
+	.save:focus-visible {
+		background: var(--surface);
+		color: var(--text);
+	}
+
 	.summary {
 		margin: 0 0 1rem;
 		color: var(--muted);

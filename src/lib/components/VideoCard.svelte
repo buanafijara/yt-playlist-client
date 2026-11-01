@@ -8,9 +8,11 @@
 		/** label for the date line, e.g. "added" for playlist items */
 		date?: { label?: string; value: string };
 		tags?: Snippet;
+		/** buttons shown next to the title */
+		actions?: Snippet;
 	}
 
-	let { video, date = { value: video.publishedAt }, tags }: Props = $props();
+	let { video, date = { value: video.publishedAt }, tags, actions }: Props = $props();
 
 	const duration = $derived(formatDuration(video.duration));
 </script>
@@ -21,9 +23,12 @@
 		{#if duration}<span class="duration">{duration}</span>{/if}
 	</a>
 	<div class="meta">
-		<a class="title" href="https://www.youtube.com/watch?v={video.id}" target="_blank" rel="noopener">
-			{video.title}
-		</a>
+		<div class="heading">
+			<a class="title" href="https://www.youtube.com/watch?v={video.id}" target="_blank" rel="noopener">
+				{video.title}
+			</a>
+			{#if actions}{@render actions()}{/if}
+		</div>
 		<a class="channel" href="https://www.youtube.com/channel/{video.channelId}" target="_blank" rel="noopener">
 			{video.channelTitle}
 		</a>
@@ -83,7 +88,15 @@
 		min-width: 0;
 	}
 
+	.heading {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.25rem;
+	}
+
 	.title {
+		flex: 1;
+		min-width: 0;
 		color: var(--text);
 		font-weight: 600;
 		line-height: 1.3;

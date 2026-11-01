@@ -42,6 +42,12 @@ export class Feed {
 		return true;
 	}
 
+	/** Drops a video, e.g. after it was removed from the playlist that brought it in. */
+	remove(id: string) {
+		if (!this.#seen.delete(id)) return;
+		this.ids.splice(this.ids.indexOf(id), 1);
+	}
+
 	advance(nextPageToken: string | undefined) {
 		if (nextPageToken) {
 			this.pageToken = nextPageToken;
@@ -64,7 +70,11 @@ export class Shuffle {
 	pagesLoaded = $state(0);
 	cancelled = false;
 
-	constructor(public totalPages: number) {}
+	constructor(
+		public totalPages: number,
+		/** the playlists being shuffled */
+		public playlistIds: Set<string>
+	) {}
 
 	get progress() {
 		return this.totalPages ? Math.min(1, this.pagesLoaded / this.totalPages) : 1;
@@ -91,10 +101,15 @@ function reactive<T>(value: T): T {
 	return proxy;
 }
 
-async function fetchPage(playlistId: string, pageToken?: string): Promise<PlaylistPage> {
-	const query = pageToken ? `?${new URLSearchParams({ pageToken })}` : '';
-	const res = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}/items${query}`, {
-		headers: { accept: 'application/json' }
+/** Calls one of our /api endpoints, throwing a LoadError on failure. */
+async function api<T>(url: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+	const res = await fetch(url, {
+		method: init.method ?? 'GET',
+		headers: {
+			accept: 'application/json',
+			...(init.body !== undefined && { 'content-type': 'application/json' })
+		},
+		body: init.body === undefined ? undefined : JSON.stringify(init.body)
 	});
 	if (!res.ok) {
 		const body = await res.json().catch(() => null);
@@ -103,7 +118,16 @@ async function fetchPage(playlistId: string, pageToken?: string): Promise<Playli
 			message: body?.message ?? 'Something went wrong talking to YouTube.'
 		} satisfies LoadError;
 	}
-	return res.json();
+	return res.status === 204 ? (undefined as T) : res.json();
+}
+
+function itemsUrl(playlistId: string) {
+	return `/api/playlists/${encodeURIComponent(playlistId)}/items`;
+}
+
+function fetchPage(playlistId: string, pageToken?: string) {
+	const query = pageToken ? `?${new URLSearchParams({ pageToken })}` : '';
+	return api<PlaylistPage>(itemsUrl(playlistId) + query);
 }
 
 /**
@@ -114,14 +138,62 @@ export class PlaylistLoader {
 	/** every video loaded so far, by ID */
 	videos = new SvelteMap<string, PlaylistVideo>();
 
-	#playlists: PlaylistSummary[];
+	/** the user's playlists; reactive, so counts update when videos are added or removed */
+	playlists: PlaylistSummary[];
 	/** one feed per selection that has been viewed, so going back to it keeps its progress */
 	#feeds = new Map<string, Feed>();
+	#shuffles = new Set<Shuffle>();
 	/** YouTube pages already fetched, so switching views never pays for the same page twice */
 	#pages = new Map<string, Promise<PlaylistPage>>();
+	/**
+	 * "playlistId:videoId" pairs removed during this visit. Cached pages still contain
+	 * them, so they're skipped when those pages are read again.
+	 */
+	#removed = new Set<string>();
 
 	constructor(playlists: PlaylistSummary[]) {
-		this.#playlists = playlists;
+		this.playlists = reactive(playlists.map((p) => ({ ...p })));
+	}
+
+	/** Saves a video to a playlist on YouTube, then shows it there. */
+	async addTo(videoId: string, playlist: PlaylistSummary) {
+		const { itemId, added } = await api<{ itemId: string; added: boolean }>(itemsUrl(playlist.id), {
+			method: 'POST',
+			body: { videoId }
+		});
+		this.#removed.delete(`${playlist.id}:${videoId}`);
+		if (added) playlist.count++;
+
+		const video = this.videos.get(videoId);
+		if (video && !video.playlists.some((p) => p.id === playlist.id)) {
+			video.playlists.push({ id: playlist.id, title: playlist.title, itemId });
+		}
+		// YouTube appends it to the end of the playlist, so feeds that already
+		// reached the end show it there; the others will reach it as they scroll.
+		for (const feed of this.#feeds.values()) {
+			if (feed.done && feed.playlists.some((p) => p.id === playlist.id)) feed.add(videoId);
+		}
+	}
+
+	/** Removes a video from a playlist on YouTube, then from every view that only had it through that playlist. */
+	async removeFrom(videoId: string, playlist: PlaylistSummary) {
+		const video = this.videos.get(videoId);
+		const membership = video?.playlists.find((p) => p.id === playlist.id);
+		if (!video || !membership) return;
+
+		await api<void>(`${itemsUrl(playlist.id)}/${encodeURIComponent(membership.itemId)}`, { method: 'DELETE' });
+		this.#removed.add(`${playlist.id}:${videoId}`);
+		playlist.count = Math.max(0, playlist.count - 1);
+		video.playlists.splice(video.playlists.indexOf(membership), 1);
+
+		const stillIn = (ids: { has(id: string): boolean }) => video.playlists.some((p) => ids.has(p.id));
+		for (const feed of this.#feeds.values()) {
+			if (!stillIn(new Set(feed.playlists.map((p) => p.id)))) feed.remove(videoId);
+		}
+		for (const shuffle of this.#shuffles) {
+			if (shuffle.cancelled) this.#shuffles.delete(shuffle);
+			else if (!stillIn(shuffle.playlistIds)) shuffle.ids = shuffle.ids.filter((id) => id !== videoId);
+		}
 	}
 
 	/**
@@ -147,7 +219,8 @@ export class PlaylistLoader {
 		const playlists = this.#select(ids);
 		// YouTube's counts include deleted and private videos, which still take up page slots
 		const totalPages = playlists.reduce((sum, p) => sum + Math.max(1, Math.ceil(p.count / 50)), 0);
-		const shuffle = new Shuffle(totalPages);
+		const shuffle = new Shuffle(totalPages, new Set(playlists.map((p) => p.id)));
+		this.#shuffles.add(shuffle);
 		this.#loadShuffle(shuffle, playlists);
 		return shuffle;
 	}
@@ -163,8 +236,7 @@ export class PlaylistLoader {
 				let pageToken: string | undefined;
 				do {
 					const page = await this.#page(playlist.id, pageToken);
-					this.#tag(playlist, page.items);
-					for (const item of page.items) all.add(item.id);
+					for (const item of this.#tag(playlist, page.items)) all.add(item.id);
 					shuffle.pagesLoaded++;
 					pageToken = page.nextPageToken;
 				} while (pageToken && !shuffle.cancelled);
@@ -183,7 +255,7 @@ export class PlaylistLoader {
 	}
 
 	#select(ids: string[]) {
-		return ids.length ? this.#playlists.filter((p) => ids.includes(p.id)) : this.#playlists;
+		return ids.length ? this.playlists.filter((p) => ids.includes(p.id)) : this.playlists;
 	}
 
 	/** Fetches the next batch of a feed. Safe to call repeatedly; extra calls are ignored. */
@@ -225,20 +297,25 @@ export class PlaylistLoader {
 	}
 
 	#ingest(feed: Feed, playlist: PlaylistRef, items: PlaylistItem[]) {
-		this.#tag(playlist, items);
-		return items.filter((item) => feed.add(item.id)).length;
+		return this.#tag(playlist, items).filter((item) => feed.add(item.id)).length;
 	}
 
-	/** Records the videos, tagging each with this playlist. */
+	/**
+	 * Records the videos, tagging each with this playlist. Returns the items that are
+	 * still in it (cached pages can include ones removed since).
+	 */
 	#tag(playlist: PlaylistRef, items: PlaylistItem[]) {
-		for (const item of items) {
+		const live = items.filter((item) => !this.#removed.has(`${playlist.id}:${item.id}`));
+		for (const { itemId, ...item } of live) {
+			const membership = { id: playlist.id, title: playlist.title, itemId };
 			const video = this.videos.get(item.id);
 			if (!video) {
-				this.videos.set(item.id, reactive({ ...item, playlists: [playlist] }));
+				this.videos.set(item.id, reactive({ ...item, playlists: [membership] }));
 			} else {
-				if (!video.playlists.some((p) => p.id === playlist.id)) video.playlists.push(playlist);
+				if (!video.playlists.some((p) => p.id === playlist.id)) video.playlists.push(membership);
 				if (item.addedAt > video.addedAt) video.addedAt = item.addedAt;
 			}
 		}
+		return live;
 	}
 }

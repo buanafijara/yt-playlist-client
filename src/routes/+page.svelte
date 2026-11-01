@@ -6,7 +6,7 @@
 	const errors: Record<string, string> = {
 		denied: 'Sign-in was cancelled.',
 		scope:
-			'YT Client needs read access to your YouTube account. Sign in again and tick “View your YouTube account” on the Google consent screen.'
+			'YT Client needs access to your YouTube account. Sign in again and tick “Manage your YouTube account” on the Google consent screen.'
 	};
 </script>
 
@@ -19,7 +19,10 @@
 	{/if}
 
 	<a class="signin" href="/auth/login" data-sveltekit-reload>Sign in with Google</a>
-	<p class="fine">Read-only access. Nothing is stored on our side; your session lives in an encrypted cookie.</p>
+	<p class="fine">
+		YT Client only changes your playlists when you ask it to. Nothing is stored on our side; your session lives in an
+		encrypted cookie.
+	</p>
 </section>
 
 <style>

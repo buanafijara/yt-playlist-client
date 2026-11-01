@@ -22,6 +22,8 @@ export interface PlaylistSummary extends PlaylistRef {
 export interface PlaylistItem extends Video {
 	/** when it was added to the playlist */
 	addedAt: string;
+	/** ID of this entry in the playlist, used to remove it */
+	itemId: string;
 }
 
 /** One batch of a playlist, as returned by /api/playlists/[id]/items */
@@ -30,7 +32,14 @@ export interface PlaylistPage {
 	nextPageToken?: string;
 }
 
-export interface PlaylistVideo extends PlaylistItem {
+/** A playlist a video is in, and the entry that puts it there */
+export interface Membership extends PlaylistRef {
+	itemId: string;
+}
+
+export interface PlaylistVideo extends Video {
+	/** most recent time it was added to one of the loaded playlists */
+	addedAt: string;
 	/** every loaded playlist this video appears in */
-	playlists: PlaylistRef[];
+	playlists: Membership[];
 }

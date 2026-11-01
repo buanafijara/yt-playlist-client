@@ -4,18 +4,33 @@ import { authorizationUrl } from '#lib/server/google.ts';
 import { OAUTH_COOKIE, type OAuthState } from '../oauth.ts';
 import type { RequestHandler } from './$types';
 
+/**
+ * Where to go after signing in. Only paths on this site are allowed, never an open
+ * redirect. Resolving against our origin also catches tricks like `/\evil.com`,
+ * which browsers treat as `//evil.com`.
+ */
+function safeReturnTo(value: string | null, origin: string) {
+	if (value) {
+		try {
+			const target = new URL(value, origin);
+			if (target.origin === origin) return target.pathname + target.search + target.hash;
+		} catch {
+			// not a valid URL
+		}
+	}
+	return '/playlists';
+}
+
 export const GET: RequestHandler = ({ url, cookies }) => {
 	const state = randomToken();
 	const codeVerifier = randomToken(48);
-	const returnTo = url.searchParams.get('returnTo');
 
 	cookies.set(
 		OAUTH_COOKIE,
 		seal({
 			state,
 			codeVerifier,
-			// only allow same-site relative paths, never an open redirect
-			returnTo: returnTo?.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/playlists'
+			returnTo: safeReturnTo(url.searchParams.get('returnTo'), url.origin)
 		} satisfies OAuthState),
 		{ path: '/auth', sameSite: 'lax', maxAge: 600 }
 	);
